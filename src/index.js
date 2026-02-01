@@ -144,8 +144,29 @@ bot.catch((err) => {
 process.once("SIGINT", () => bot.stop());
 process.once("SIGTERM", () => bot.stop());
 
-// Drop pending updates on start to avoid conflicts
-bot.start({
-  drop_pending_updates: true,
-  onStart: () => console.log("Bot is running!"),
+// Start with retry — handles 409 conflicts during Railway redeployments
+async function startWithRetry(retries = 5) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      // Clear any existing webhook/polling before starting
+      await bot.api.deleteWebhook({ drop_pending_updates: true });
+      await bot.start({
+        drop_pending_updates: true,
+        onStart: () => console.log("Bot is running!"),
+      });
+      return;
+    } catch (err) {
+      if (err.error_code === 409 && i < retries - 1) {
+        console.log(`Conflict (409), retrying in ${(i + 1) * 3}s...`);
+        await new Promise((r) => setTimeout(r, (i + 1) * 3000));
+      } else {
+        throw err;
+      }
+    }
+  }
+}
+
+startWithRetry().catch((err) => {
+  console.error("Failed to start bot:", err);
+  process.exit(1);
 });

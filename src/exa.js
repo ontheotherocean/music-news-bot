@@ -35,7 +35,7 @@ export async function searchMusicNews(query) {
       publishedDate: r.publishedDate || null,
     }));
   } catch (error) {
-    console.error("Exa search error:", error.message);
+    console.error("Exa search error:", error.message, error.response?.data || "");
     return null;
   }
 }

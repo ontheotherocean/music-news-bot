@@ -5,6 +5,18 @@ import { searchMusicNews, formatSearchContext } from "./exa.js";
 
 const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN);
 
+// Helper: edit message with Markdown, fallback to plain text if Telegram rejects it
+async function safeEdit(ctx, messageId, text) {
+  try {
+    await ctx.api.editMessageText(ctx.chat.id, messageId, text, {
+      parse_mode: "Markdown",
+    });
+  } catch {
+    // Markdown failed — send as plain text
+    await ctx.api.editMessageText(ctx.chat.id, messageId, text);
+  }
+}
+
 // Keywords that trigger a web search before answering
 const SEARCH_TRIGGERS = [
   "новости",
@@ -39,8 +51,9 @@ bot.command("start", async (ctx) => {
   await ctx.reply(
     "Привет! Я музыкальный эксперт-бот.\n\n" +
       "Спроси меня о музыкальных новостях, релизах, артистах — я найду актуальную информацию и отвечу со ссылками на источники.\n\n" +
-      "Попробуй:\n" +
-      '• "Музыкальные новости за неделю"\n' +
+      "Команды:\n" +
+      "/news — сводка 10 главных музыкальных новостей за неделю\n\n" +
+      "Или просто напиши вопрос:\n" +
       '• "Новые альбомы этой недели"\n' +
       '• "Что нового в электронной музыке?"'
   );
@@ -67,16 +80,11 @@ bot.command("news", async (ctx) => {
       searchContext
     );
 
-    await ctx.api.editMessageText(
-      ctx.chat.id,
-      thinkingMsg.message_id,
-      response,
-      { parse_mode: "Markdown" }
-    );
+    await safeEdit(ctx, thinkingMsg.message_id, response);
   } catch (error) {
-    console.error("Error in /news:", error);
-    await ctx.api.editMessageText(
-      ctx.chat.id,
+    console.error("Error in /news:", error?.message || error);
+    await safeEdit(
+      ctx,
       thinkingMsg.message_id,
       "Произошла ошибка при получении новостей. Попробуйте позже."
     );
@@ -111,20 +119,13 @@ bot.on("message:text", async (ctx) => {
 
     const response = await chat(userText, searchContext);
 
-    // Edit the "thinking" message with the actual response
-    await ctx.api.editMessageText(
-      ctx.chat.id,
-      thinkingMsg.message_id,
-      response,
-      { parse_mode: "Markdown" }
-    );
+    await safeEdit(ctx, thinkingMsg.message_id, response);
   } catch (error) {
-    console.error("Error handling message:", error);
+    console.error("Error handling message:", error?.message || error);
 
-    // If Markdown fails, try without parse mode
     try {
-      await ctx.api.editMessageText(
-        ctx.chat.id,
+      await safeEdit(
+        ctx,
         thinkingMsg.message_id,
         "Произошла ошибка при обработке запроса. Попробуйте ещё раз."
       );
@@ -139,7 +140,12 @@ bot.catch((err) => {
   console.error("Bot error:", err);
 });
 
-// Start the bot
+// Graceful shutdown
+process.once("SIGINT", () => bot.stop());
+process.once("SIGTERM", () => bot.stop());
+
+// Drop pending updates on start to avoid conflicts
 bot.start({
+  drop_pending_updates: true,
   onStart: () => console.log("Bot is running!"),
 });

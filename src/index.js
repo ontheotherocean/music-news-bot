@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { Bot } from "grammy";
-import { chat, rankAndDigest } from "./openai.js";
+import { chat, rankAndDigest, planQuery } from "./openai.js";
 import { searchMusicNews, collectWeeklyNews, formatSearchContext } from "./exa.js";
 
 const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN);
@@ -17,35 +17,6 @@ async function safeEdit(ctx, messageId, text) {
   }
 }
 
-// Keywords that trigger a web search before answering
-const SEARCH_TRIGGERS = [
-  "новости",
-  "news",
-  "что нового",
-  "что произошло",
-  "последние",
-  "свежие",
-  "на этой неделе",
-  "за неделю",
-  "релиз",
-  "release",
-  "альбом",
-  "album",
-  "концерт",
-  "фестиваль",
-  "тур",
-  "tour",
-  "festival",
-  "pitchfork",
-  "guardian",
-  "resident advisor",
-];
-
-function needsSearch(text) {
-  const lower = text.toLowerCase();
-  return SEARCH_TRIGGERS.some((trigger) => lower.includes(trigger));
-}
-
 // /start command
 bot.command("start", async (ctx) => {
   await ctx.reply(
@@ -55,7 +26,8 @@ bot.command("start", async (ctx) => {
       "/news — сводка 10 главных музыкальных новостей за неделю\n\n" +
       "Или просто напиши вопрос:\n" +
       '• "Новые альбомы этой недели"\n' +
-      '• "Что нового в электронной музыке?"'
+      '• "Что нового в электронной музыке?"\n' +
+      '• "Что пишут про Филипа Гласса?"'
   );
 });
 
@@ -102,30 +74,54 @@ bot.command("news", async (ctx) => {
 // Handle all text messages
 bot.on("message:text", async (ctx) => {
   const userText = ctx.message.text;
-  const shouldSearch = needsSearch(userText);
 
-  // Show "thinking" message
-  const thinkingMsg = await ctx.reply(
-    shouldSearch ? "🔍 Ищу информацию..." : "🧠 Думаю..."
-  );
+  const thinkingMsg = await ctx.reply("🧠 Думаю...");
 
   try {
+    // Step 1: GPT decides if search is needed + generates English queries
+    const plan = await planQuery(userText);
+    console.log("Query plan:", JSON.stringify(plan));
+
     let searchContext = null;
+    let allowedUrls = [];
 
-    if (shouldSearch) {
-      const searchResults = await searchMusicNews(userText);
-      searchContext = formatSearchContext(searchResults);
+    if (plan.needsSearch && plan.searchQueries?.length > 0) {
+      await ctx.api.editMessageText(
+        ctx.chat.id,
+        thinkingMsg.message_id,
+        "🔍 Ищу информацию..."
+      );
 
-      if (searchContext) {
+      // Step 2: Run each search query through Exa, collect and dedupe
+      const allArticles = [];
+      const seenUrls = new Set();
+
+      for (const query of plan.searchQueries) {
+        const results = await searchMusicNews(query);
+        if (results) {
+          for (const r of results) {
+            if (!seenUrls.has(r.url)) {
+              seenUrls.add(r.url);
+              allArticles.push(r);
+            }
+          }
+        }
+      }
+
+      if (allArticles.length > 0) {
+        searchContext = formatSearchContext(allArticles);
+        allowedUrls = allArticles.map((a) => a.url);
+
         await ctx.api.editMessageText(
           ctx.chat.id,
           thinkingMsg.message_id,
-          "🧠 Анализирую найденное..."
+          `🧠 Найдено ${allArticles.length} статей, формирую ответ...`
         );
       }
     }
 
-    const response = await chat(userText, searchContext);
+    // Step 3: GPT answers with search context (or without)
+    const response = await chat(userText, searchContext, allowedUrls);
 
     await safeEdit(ctx, thinkingMsg.message_id, response);
   } catch (error) {

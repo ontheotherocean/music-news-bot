@@ -4,11 +4,15 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const SYSTEM_PROMPT = `Ты музыкальный эксперт высшего класса. Каждую неделю присылай информацию о 10 важных музыкальных новостях в мире, произошедших за прошедшую неделю, основываясь на таких источниках как Pitchfork, Resident Advisor, New York Times, Guardian.
-Пиши кратко и по существу.
+const SYSTEM_PROMPT = `Ты музыкальный эксперт высшего класса.
+Пиши кратко и по существу. Отвечай на русском языке.
 
-Когда тебе предоставлены результаты поиска — используй их как основу для ответа и ОБЯЗАТЕЛЬНО указывай ссылки на источники в формате [текст](url).
-Отвечай на русском языке.`;
+КРИТИЧЕСКИ ВАЖНО:
+- Используй ТОЛЬКО информацию из предоставленных результатов поиска. НИКОГДА не придумывай новости, факты или события.
+- Каждую новость сопровождай прямой ссылкой на источник в формате [название источника](url).
+- Допустимые источники: Pitchfork, Resident Advisor, New York Times, The Guardian.
+- Если результатов поиска нет — честно скажи, что не удалось найти актуальные новости, и предложи попробовать позже.
+- НЕ ссылайся на главные страницы сайтов (вроде pitchfork.com/news/) — только на конкретные статьи.`;
 
 /**
  * Send a message to OpenAI and get a response
@@ -20,7 +24,9 @@ export async function chat(userMessage, searchContext = null) {
 
   let content = userMessage;
   if (searchContext) {
-    content = `Вот результаты поиска по теме:\n\n${searchContext}\n\n---\nВопрос пользователя: ${userMessage}\n\nИспользуй найденную информацию для ответа и приведи ссылки на источники.`;
+    content = `Вот результаты поиска по теме:\n\n${searchContext}\n\n---\nВопрос пользователя: ${userMessage}\n\nОтветь СТРОГО на основе этих результатов. Приведи ссылки на конкретные статьи.`;
+  } else {
+    content = `${userMessage}\n\n(Результаты поиска отсутствуют. Если вопрос требует актуальных данных — сообщи, что не удалось найти информацию.)`;
   }
 
   messages.push({ role: "user", content });
@@ -29,7 +35,7 @@ export async function chat(userMessage, searchContext = null) {
     model: "gpt-4o-mini",
     messages,
     max_tokens: 2048,
-    temperature: 0.7,
+    temperature: 0.3,
   });
 
   return completion.choices[0].message.content;

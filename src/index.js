@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { Bot } from "grammy";
-import { chat } from "./openai.js";
-import { searchMusicNews, formatSearchContext } from "./exa.js";
+import { chat, rankAndDigest } from "./openai.js";
+import { searchMusicNews, collectWeeklyNews, formatSearchContext } from "./exa.js";
 
 const bot = new Bot(process.env.TELEGRAM_BOT_TOKEN);
 
@@ -59,28 +59,36 @@ bot.command("start", async (ctx) => {
   );
 });
 
-// /news command — weekly digest shortcut
+// /news command — weekly digest with 2-step pipeline
 bot.command("news", async (ctx) => {
-  const thinkingMsg = await ctx.reply("🔍 Ищу последние музыкальные новости...");
+  const thinkingMsg = await ctx.reply(
+    "🔍 Собираю новости с Pitchfork, Resident Advisor, NYT, Guardian..."
+  );
 
   try {
-    const searchResults = await searchMusicNews(
-      "important music news this week releases albums tours festivals"
-    );
-    const searchContext = formatSearchContext(searchResults);
+    // Step 1: Collect articles from all sources in parallel
+    const allArticles = await collectWeeklyNews();
+
+    if (!allArticles || allArticles.length === 0) {
+      await safeEdit(
+        ctx,
+        thinkingMsg.message_id,
+        "Не удалось найти свежие новости. Попробуйте позже."
+      );
+      return;
+    }
 
     await ctx.api.editMessageText(
       ctx.chat.id,
       thinkingMsg.message_id,
-      "🧠 Анализирую найденное..."
+      `🧠 Найдено ${allArticles.length} статей, выбираю 10 самых важных...`
     );
 
-    const response = await chat(
-      "Расскажи о 10 самых важных музыкальных новостях за последнюю неделю.",
-      searchContext
-    );
+    // Step 2: GPT ranks and picks top 10
+    const context = formatSearchContext(allArticles);
+    const digest = await rankAndDigest(context);
 
-    await safeEdit(ctx, thinkingMsg.message_id, response);
+    await safeEdit(ctx, thinkingMsg.message_id, digest);
   } catch (error) {
     console.error("Error in /news:", error?.message || error);
     await safeEdit(

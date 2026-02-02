@@ -1,5 +1,6 @@
 import "dotenv/config";
-import { Bot } from "grammy";
+import { Bot, webhookCallback } from "grammy";
+import { createServer } from "node:http";
 import { chat, rankAndDigest, planQuery } from "./openai.js";
 import { searchMusicNews, collectWeeklyNews, formatSearchContext } from "./exa.js";
 
@@ -144,33 +145,43 @@ bot.catch((err) => {
   console.error("Bot error:", err);
 });
 
-// Graceful shutdown
-process.once("SIGINT", () => bot.stop());
-process.once("SIGTERM", () => bot.stop());
+// --- Webhook mode: no more 409 conflicts ---
+const WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN
+  ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`
+  : process.env.WEBHOOK_URL;
 
-// Start with retry — handles 409 conflicts during Railway redeployments
-async function startWithRetry(retries = 5) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      // Clear any existing webhook/polling before starting
-      await bot.api.deleteWebhook({ drop_pending_updates: true });
-      await bot.start({
-        drop_pending_updates: true,
-        onStart: () => console.log("Bot is running!"),
-      });
-      return;
-    } catch (err) {
-      if (err.error_code === 409 && i < retries - 1) {
-        console.log(`Conflict (409), retrying in ${(i + 1) * 3}s...`);
-        await new Promise((r) => setTimeout(r, (i + 1) * 3000));
-      } else {
-        throw err;
+const PORT = parseInt(process.env.PORT || "3000", 10);
+
+if (WEBHOOK_URL) {
+  // Production: use webhooks
+  const handleUpdate = webhookCallback(bot, "http");
+
+  const server = createServer(async (req, res) => {
+    if (req.method === "POST" && req.url === "/webhook") {
+      try {
+        await handleUpdate(req, res);
+      } catch (err) {
+        console.error("Webhook error:", err);
+        res.writeHead(500);
+        res.end("error");
       }
+    } else {
+      res.writeHead(200);
+      res.end("ok");
     }
-  }
-}
+  });
 
-startWithRetry().catch((err) => {
-  console.error("Failed to start bot:", err);
-  process.exit(1);
-});
+  server.listen(PORT, async () => {
+    // Set webhook with Telegram
+    await bot.api.setWebhook(WEBHOOK_URL);
+    console.log(`Bot webhook set: ${WEBHOOK_URL}`);
+    console.log(`Server listening on port ${PORT}`);
+  });
+} else {
+  // Local dev: use polling
+  console.log("No WEBHOOK_URL — starting in polling mode");
+  bot.start({
+    drop_pending_updates: true,
+    onStart: () => console.log("Bot is running (polling)!"),
+  });
+}

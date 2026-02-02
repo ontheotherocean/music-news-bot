@@ -191,6 +191,7 @@ if (WEBHOOK_URL) {
   });
 
   server.listen(PORT, async () => {
+    await bot.init();
     await bot.api.setWebhook(WEBHOOK_URL);
     console.log(`Bot webhook set: ${WEBHOOK_URL}`);
     console.log(`Server listening on port ${PORT}`);

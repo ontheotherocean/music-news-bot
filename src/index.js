@@ -145,26 +145,45 @@ bot.catch((err) => {
   console.error("Bot error:", err);
 });
 
-// --- Webhook mode: no more 409 conflicts ---
+// --- Webhook mode ---
 const WEBHOOK_URL = process.env.RAILWAY_PUBLIC_DOMAIN
   ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}/webhook`
   : process.env.WEBHOOK_URL;
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
-if (WEBHOOK_URL) {
-  // Production: use webhooks
-  const handleUpdate = webhookCallback(bot, "http");
+// Deduplicate retried webhook deliveries from Telegram
+const processedUpdates = new Set();
+const MAX_PROCESSED = 1000;
 
+if (WEBHOOK_URL) {
   const server = createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/webhook") {
-      try {
-        await handleUpdate(req, res);
-      } catch (err) {
-        console.error("Webhook error:", err);
-        res.writeHead(500);
-        res.end("error");
+      // Read body
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      const body = JSON.parse(Buffer.concat(chunks).toString());
+
+      // Respond 200 immediately — Telegram won't retry
+      res.writeHead(200);
+      res.end("ok");
+
+      // Deduplicate: skip if we already saw this update
+      const updateId = body.update_id;
+      if (processedUpdates.has(updateId)) {
+        console.log(`Skipping duplicate update ${updateId}`);
+        return;
       }
+      processedUpdates.add(updateId);
+      if (processedUpdates.size > MAX_PROCESSED) {
+        const first = processedUpdates.values().next().value;
+        processedUpdates.delete(first);
+      }
+
+      // Process in background (no await — webhook already responded)
+      bot.handleUpdate(body).catch((err) => {
+        console.error("Update processing error:", err?.message || err);
+      });
     } else {
       res.writeHead(200);
       res.end("ok");
@@ -172,7 +191,6 @@ if (WEBHOOK_URL) {
   });
 
   server.listen(PORT, async () => {
-    // Set webhook with Telegram
     await bot.api.setWebhook(WEBHOOK_URL);
     console.log(`Bot webhook set: ${WEBHOOK_URL}`);
     console.log(`Server listening on port ${PORT}`);
